@@ -6,6 +6,7 @@ from functools import wraps
 
 DATE_FORMAT = "%d.%m.%Y"
 UPCOMING_DAYS = 7
+WEEKEND_LOOKBACK_DAYS = 2
 
 
 class Field:
@@ -61,8 +62,9 @@ class Record:
 
     def remove_phone(self, phone: str) -> None:
         found = self.find_phone(phone)
-        if found:
-            self.phones.remove(found)
+        if found is None:
+            raise ValueError("Phone not found.")
+        self.phones.remove(found)
 
     def edit_phone(self, old_phone: str, new_phone: str) -> None:
         found = self.find_phone(old_phone)
@@ -94,8 +96,11 @@ class AddressBook(UserDict):
     def delete(self, name: str) -> None:
         self.data.pop(name, None)
 
-    def get_upcoming_birthdays(self) -> list[dict[str, str]]:
-        today = date.today()
+    def get_upcoming_birthdays(
+        self, today: date | None = None
+    ) -> list[dict[str, str]]:
+        today = today or date.today()
+        search_start = today - timedelta(days=WEEKEND_LOOKBACK_DAYS)
         upcoming = []
 
         for record in self.data.values():
@@ -103,11 +108,14 @@ class AddressBook(UserDict):
                 continue
 
             birthday = record.birthday.value.date()
-            next_birthday = self._next_birthday(birthday, today)
+            next_birthday = self._next_birthday(birthday, search_start)
             if (next_birthday - today).days >= UPCOMING_DAYS:
                 continue
 
             greeting_date = self._shift_to_weekday(next_birthday)
+            if greeting_date < today:
+                continue
+
             upcoming.append(
                 {
                     "name": record.name.value,
@@ -162,6 +170,12 @@ def parse_input(user_input: str) -> tuple[str, ...]:
     return command.lower(), *args
 
 
+def check_args(args: list[str], expected: int, usage: str) -> None:
+    """Raise ValueError unless exactly `expected` arguments were given."""
+    if len(args) != expected:
+        raise ValueError(f"Invalid number of arguments. Usage: {usage}")
+
+
 def get_record(book: AddressBook, name: str) -> Record:
     """Return the contact or raise KeyError for input_error to report."""
     record = book.find(name)
@@ -172,10 +186,9 @@ def get_record(book: AddressBook, name: str) -> Record:
 
 @input_error
 def add_contact(args: list[str], book: AddressBook) -> str:
-    if len(args) < 2:
-        raise ValueError("Please provide a name and phone number.")
+    check_args(args, 2, "add <name> <phone>")
 
-    name, phone, *_ = args
+    name, phone = args
     record = book.find(name)
     if record is None:
         record = Record(name)
@@ -189,8 +202,7 @@ def add_contact(args: list[str], book: AddressBook) -> str:
 
 @input_error
 def change_contact(args: list[str], book: AddressBook) -> str:
-    if len(args) != 3:
-        raise ValueError("Please provide a name, old phone and new phone.")
+    check_args(args, 3, "change <name> <old_phone> <new_phone>")
 
     name, old_phone, new_phone = args
     get_record(book, name).edit_phone(old_phone, new_phone)
@@ -199,12 +211,17 @@ def change_contact(args: list[str], book: AddressBook) -> str:
 
 @input_error
 def show_phone(args: list[str], book: AddressBook) -> str:
+    check_args(args, 1, "phone <name>")
+
     record = get_record(book, args[0])
     phones = "; ".join(p.value for p in record.phones)
     return f"{record.name.value}: {phones}"
 
 
-def show_all(book: AddressBook) -> str:
+@input_error
+def show_all(args: list[str], book: AddressBook) -> str:
+    check_args(args, 0, "all")
+
     if not book:
         return "No contacts."
     return "\n".join(str(record) for record in book.values())
@@ -212,12 +229,9 @@ def show_all(book: AddressBook) -> str:
 
 @input_error
 def add_birthday(args: list[str], book: AddressBook) -> str:
-    if len(args) < 2:
-        raise ValueError(
-            "Please provide a contact name and birthday (DD.MM.YYYY)."
-        )
+    check_args(args, 2, "add-birthday <name> <DD.MM.YYYY>")
 
-    name, birthday, *_ = args
+    name, birthday = args
     record = get_record(book, name)
     message = "Birthday updated." if record.birthday else "Birthday added."
     record.add_birthday(birthday)
@@ -226,6 +240,8 @@ def add_birthday(args: list[str], book: AddressBook) -> str:
 
 @input_error
 def show_birthday(args: list[str], book: AddressBook) -> str:
+    check_args(args, 1, "show-birthday <name>")
+
     record = get_record(book, args[0])
     if record.birthday is None:
         return "Birthday not specified."
@@ -234,6 +250,8 @@ def show_birthday(args: list[str], book: AddressBook) -> str:
 
 @input_error
 def birthdays(args: list[str], book: AddressBook) -> str:
+    check_args(args, 0, "birthdays")
+
     upcoming = book.get_upcoming_birthdays()
     if not upcoming:
         return "No upcoming birthdays."
@@ -267,7 +285,7 @@ def main() -> None:
         elif command == "phone":
             print(show_phone(args, book))
         elif command == "all":
-            print(show_all(book))
+            print(show_all(args, book))
         elif command == "add-birthday":
             print(add_birthday(args, book))
         elif command == "show-birthday":
